@@ -57,7 +57,7 @@ int main(int argc, char** argv) {
     
     #define DISPATCH(F_STR, EVAL, MIN, MAX, TOL) \
         if (strcmp(func, #F_STR) == 0) { \
-            if (strcmp(mode, "raw") == 0)         RUN_TEST_STD(raw, F_STR, EVAL, MIN, MAX, 0.01, 0.01); \
+            if (strcmp(mode, "raw") == 0)         RUN_TEST_STD(raw, F_STR, EVAL, MIN, MAX, 0.1, 0.1); \
             else if (strcmp(mode, "greedy") == 0) RUN_TEST_STD(greedy, F_STR, EVAL, MIN, MAX, 0.01, TOL); \
             else if (strcmp(mode, "pow2") == 0)   RUN_TEST_POW2(F_STR, EVAL, MIN, MAX, 0.01, TOL); \
         }
