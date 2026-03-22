@@ -42,7 +42,6 @@ def write_c_array(f, type_str, name, data):
 
 def main():
     # Definizione delle 15 funzioni con i loro domini e tolleranze desiderate
-    # atan2 e pow hanno il secondo parametro fissato per renderle 1D.
     FUNCTIONS = {
         'acos':  {'func': np.arccos, 'min': -1.0, 'max': 1.0, 'tol': 0.02},
         'asin':  {'func': np.arcsin, 'min': -1.0, 'max': 1.0, 'tol': 0.02},
@@ -57,7 +56,7 @@ def main():
         'sin':   {'func': np.sin, 'min': 0.0, 'max': 6.28, 'tol': 0.02},
         'sinh':  {'func': np.sinh, 'min': -3.0, 'max': 3.0, 'tol': 0.05},
         'sqrt':  {'func': np.sqrt, 'min': 0.0, 'max': 100.0, 'tol': 0.1},
-        'tan':   {'func': np.tan, 'min': -1.4, 'max': 1.4, 'tol': 0.1}, # Evito asintoto a pi/2
+        'tan':   {'func': np.tan, 'min': -1.4, 'max': 1.4, 'tol': 0.1},
         'tanh':  {'func': np.tanh, 'min': -3.0, 'max': 3.0, 'tol': 0.02}
     }
 
@@ -69,7 +68,6 @@ def main():
         for name, cfg in FUNCTIONS.items():
             f.write(f"// ==================== {name.upper()} ====================\n")
             
-            # Generazione dati RAW (1000 punti, alta risoluzione)
             x_raw = np.linspace(cfg['min'], cfg['max'], 1000)
             y_raw = cfg['func'](x_raw)
             
@@ -78,19 +76,17 @@ def main():
             write_c_array(f, "double", f"{name}_raw_table", y_raw)
             f.write("\n")
 
-            # Generazione dati GREEDY
             opt_x, opt_y = get_greedy_spacing(x_raw, y_raw, cfg['tol'])
             f.write(f"const int {name}_greedy_num = {len(opt_x)};\n")
             write_c_array(f, "double", f"{name}_greedy_bp", opt_x)
             write_c_array(f, "double", f"{name}_greedy_table", opt_y)
             f.write("\n")
 
-            # Generazione dati POW2
             N, p2_x, p2_y = get_pow2_spacing(x_raw, y_raw, cfg['tol'])
             f.write(f"const int {name}_pow2_num = {len(p2_y)};\n")
-            f.write(f"const double {name}_pow2_min = {p2_x[0]};\n")
-            f.write(f"const double {name}_pow2_spacing = {2.0**N};\n")
-            f.write(f"const double {name}_pow2_inv = {1.0/(2.0**N)};\n")
+            f.write(f"const double {name}_pow2_min = {p2_x[0]:.6f};\n")
+            f.write(f"const double {name}_pow2_spacing = {2.0**N:.6f};\n")
+            f.write(f"const double {name}_pow2_inv = {1.0/(2.0**N):.6f};\n")
             write_c_array(f, "double", f"{name}_pow2_table", p2_y)
             f.write("\n")
 
