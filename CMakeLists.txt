@@ -2,47 +2,70 @@ cmake_minimum_required(VERSION 3.10)
 project(SimulinkLookup C)
 
 set(CMAKE_C_STANDARD 99)
-set(CMAKE_C_STANDARD_REQUIRED True)
+set(CMAKE_C_STANDARD_REQUIRED TRUE)
 
 # --- 1. LIBRERIA PRINCIPALE ---
 add_library(simulink_lookup simulink_lookup.c)
 target_include_directories(simulink_lookup PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
-# --- 2. AUTOMAZIONE PYTHON ---
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin/python")
-    set(Python3_EXECUTABLE "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin/python") # Mac/Linux
-elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.venv/Scripts/python.exe")
-    set(Python3_EXECUTABLE "${CMAKE_CURRENT_SOURCE_DIR}/.venv/Scripts/python.exe") # Windows
+if(UNIX AND NOT APPLE)
+    target_link_libraries(simulink_lookup PUBLIC m)
 endif()
 
-find_package(Python3 REQUIRED)
+# --- 2. PYTHON PER AUTOGENERAZIONE ---
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin/python")
+    set(Python3_EXECUTABLE "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin/python")
+elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.venv/Scripts/python.exe")
+    set(Python3_EXECUTABLE "${CMAKE_CURRENT_SOURCE_DIR}/.venv/Scripts/python.exe")
+endif()
+
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+set(GENERATED_HEADER "${CMAKE_CURRENT_BINARY_DIR}/test_luts_data.h")
 
 add_custom_command(
-    OUTPUT test_luts_data.h
+    OUTPUT ${GENERATED_HEADER}
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/lut_autogen.py
+            --output ${GENERATED_HEADER}
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/lut_autogen.py
-    COMMENT "Generazione automatica delle 45 LUT matematiche via Python..."
+    COMMENT "Generazione automatica LUT 1D/2D via Python..."
+    VERBATIM
 )
+
+add_custom_target(generate_luts DEPENDS ${GENERATED_HEADER})
 
 # --- 3. ESEGUIBILE DI TEST ---
-add_executable(run_math_tests test_luts.c test_luts_data.h)
-target_link_libraries(run_math_tests simulink_lookup m)
-target_include_directories(run_math_tests PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+add_executable(run_math_tests test_luts.c ${GENERATED_HEADER})
+add_dependencies(run_math_tests generate_luts)
 
-# --- 4. REGISTRAZIONE DINAMICA DEI TEST (CTEST) ---
+target_link_libraries(run_math_tests PRIVATE simulink_lookup)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(run_math_tests PRIVATE m)
+endif()
+
+target_include_directories(run_math_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+# --- 4. CTEST ---
 enable_testing()
 
-# Lista delle 15 funzioni matematiche
-set(MATH_FUNCS 
+set(MATH_FUNCS
     acos asin atan atan2 cos cosh exp log log10 pow sin sinh sqrt tan tanh
 )
-# Lista delle 3 modalità di generazione
+
 set(MODES raw greedy pow2)
 
-# Crea un test separato per ogni combinazione (15x3 = 45 Test)
 foreach(func IN LISTS MATH_FUNCS)
     foreach(mode IN LISTS MODES)
-        add_test(NAME "TestLUT_${func}_${mode}" 
+        add_test(NAME "TestLUT1D_${func}_${mode}"
                  COMMAND run_math_tests ${func} ${mode})
     endforeach()
 endforeach()
+
+# Test 2D aggiuntivi
+add_test(NAME TestLUT2D_plane_raw     COMMAND run_math_tests lut2d_plane raw)
+add_test(NAME TestLUT2D_plane_pow2    COMMAND run_math_tests lut2d_plane pow2)
+add_test(NAME TestLUT2D_nonlinear_raw COMMAND run_math_tests lut2d_nonlinear raw)
+add_test(NAME TestLUT2D_nonlinear_pow2 COMMAND run_math_tests lut2d_nonlinear pow2)

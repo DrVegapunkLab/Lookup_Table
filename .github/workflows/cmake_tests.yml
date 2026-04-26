@@ -1,46 +1,48 @@
 name: Simulink Lookup CI
 
-# Scegliamo quando far partire i test:
-# A ogni push sul branch 'main' e a ogni Pull Request.
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: ["main", "master"]
   pull_request:
-    branches: [ "main", "master" ]
+    branches: ["main", "master"]
 
 jobs:
   build-and-test:
-    # Usiamo una macchina virtuale Ubuntu fresca fornita da GitHub
     runs-on: ubuntu-latest
 
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Debug, Release]
+
     steps:
-    # 1. Scarica il codice dal tuo repository
-    - name: Checkout del codice
-      uses: actions/checkout@v4
+      - name: Checkout codice
+        uses: actions/checkout@v4
 
-    # 2. Prepara Python (serve per il nostro lut_autogen.py)
-    - name: Setup Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.12'
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
-    # 3. Installa Numpy (requisito per generare le tabelle)
-    - name: Installazione dipendenze Python
-      run: |
-        python -m pip install --upgrade pip
-        pip install numpy
+      - name: Installa dipendenze Python
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy pandas scipy
 
-    # 4. Configura CMake (Crea i Makefile)
-    - name: Configurazione CMake
-      # Usiamo -B build per dire a CMake di creare la cartella 'build'
-      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=Debug
+      - name: Installa toolchain C
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
 
-    # 5. Compila il codice C e genera l'header tramite Python
-    - name: Compilazione Progetto
-      run: cmake --build ${{github.workspace}}/build -j 4
+      - name: Configura CMake
+        run: cmake -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
 
-    # 6. Esegui i 45 Test Matematici!
-    - name: Esecuzione CTest
-      working-directory: ${{github.workspace}}/build
-      # --output-on-failure ci mostrerà nel log di GitHub esattamente quale test è fallito e perché
-      run: ctest --output-on-failure
+      - name: Compila
+        run: cmake --build build --parallel 4
+
+      - name: Esegui CTest
+        working-directory: build
+        run: ctest --output-on-failure --parallel 4
+
+      - name: Genera CSV demo
+        run: python genera_csv.py --mode both
