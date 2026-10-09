@@ -1,0 +1,11 @@
+# Python runtime dependencies for Lookup_Table.
+# Recommended Python: 3.10 or newer (64-bit).
+#
+# Install inside the project virtual environment with:
+#   python -m pip install -r requirements.txt
+
+numpy>=1.26,<3
+pandas>=2.0,<4
+matplotlib>=3.8,<4
+scipy>=1.11,<2
+PyQt5>=5.15.10,<6

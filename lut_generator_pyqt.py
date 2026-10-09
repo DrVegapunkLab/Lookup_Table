@@ -19,6 +19,15 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QFontDatabase
 
+from lut_codegen import (
+    C_TYPE_ORDER,
+    C_TYPE_SPECS,
+    estimate_lut_bytes,
+    generate_c_lut,
+    prepare_deployed_lut_data,
+    type_key_from_label,
+)
+
 
 # =====================================================================
 # MOTORE SIL - Software-In-the-Loop
@@ -711,6 +720,12 @@ class LUTGeneratorApp(QMainWindow):
             "Lineare (EXTRAP_LINEAR)"
         ])
 
+        self.combo_bp_type = QComboBox()
+        self.combo_table_type = QComboBox()
+        type_labels = [C_TYPE_SPECS[key].label for key in C_TYPE_ORDER]
+        self.combo_bp_type.addItems(type_labels)
+        self.combo_table_type.addItems(type_labels)
+
         self.btn_optimize = QPushButton("Ottimizza LUT")
         self.btn_optimize.clicked.connect(self.optimize_lut)
 
@@ -718,6 +733,8 @@ class LUTGeneratorApp(QMainWindow):
 
         f_opt.addRow("Tolleranza max errore:", self.spin_tol)
         f_opt.addRow("Estrapolazione:", self.combo_extrap_c)
+        f_opt.addRow("Tipo input / breakpoint:", self.combo_bp_type)
+        f_opt.addRow("Tipo tabella:", self.combo_table_type)
         f_opt.addRow("", self.chk_pow2)
         f_opt.addRow(self.btn_optimize)
         f_opt.addRow(self.lbl_memory)
@@ -762,6 +779,8 @@ class LUTGeneratorApp(QMainWindow):
         self.combo_x.currentIndexChanged.connect(self.on_variables_changed)
         self.combo_y.currentIndexChanged.connect(self.on_variables_changed)
         self.chk_pow2.stateChanged.connect(self.on_variables_changed)
+        self.combo_bp_type.currentIndexChanged.connect(self.on_codegen_type_changed)
+        self.combo_table_type.currentIndexChanged.connect(self.on_codegen_type_changed)
 
         self.set_opt_controls_enabled(False)
 
@@ -771,8 +790,61 @@ class LUTGeneratorApp(QMainWindow):
         self.spin_tol.setEnabled(state)
         self.chk_pow2.setEnabled(state)
         self.combo_extrap_c.setEnabled(state)
+        self.combo_bp_type.setEnabled(state)
+        self.combo_table_type.setEnabled(state)
         self.btn_optimize.setEnabled(state)
         self.btn_generate.setEnabled(state)
+
+    def get_selected_c_types(self):
+        bp_type = type_key_from_label(self.combo_bp_type.currentText())
+        table_type = type_key_from_label(self.combo_table_type.currentText())
+        return bp_type, table_type
+
+    def update_memory_label(self):
+        if self.df is None:
+            return
+
+        orig_x, _, _, _ = self.get_clean_data()
+        bp_type, table_type = self.get_selected_c_types()
+        original_bytes = estimate_lut_bytes(len(orig_x), bp_type, table_type, False)
+
+        if self.opt_y is not None:
+            optimized_bytes = estimate_lut_bytes(len(self.opt_y), bp_type, table_type, self.is_pow2)
+            optimized_points = len(self.opt_y)
+        else:
+            optimized_bytes = original_bytes
+            optimized_points = len(orig_x)
+
+        reduction = 100 * (1 - optimized_bytes / original_bytes) if original_bytes > 0 else 0.0
+        self.lbl_memory.setText(
+            f"ROM stimata: {original_bytes} B → {optimized_bytes} B | "
+            f"Punti: {len(orig_x)} → {optimized_points} | "
+            f"Risparmio: {reduction:.1f}%"
+        )
+
+    def on_codegen_type_changed(self):
+        self.text_code.clear()
+        if self.df is None:
+            return
+
+        try:
+            self.update_memory_label()
+            x_data, y_data, _, _ = self.get_clean_data()
+            if self.opt_x is not None and self.opt_y is not None:
+                x_data, y_data = self.opt_x, self.opt_y
+            bp_type, table_type = self.get_selected_c_types()
+            prepare_deployed_lut_data(
+                x_data, y_data, bp_type, table_type, self.is_pow2, self.pow2_N
+            )
+            if self.opt_x is not None and self.opt_y is not None:
+                self.plot_opt_data()
+            if hasattr(self, "ax_val_main"):
+                self.ax_val_main.clear()
+                self.ax_val_err.clear()
+                self.lbl_sil_stats.setText("Tipo C cambiato. Riesegui la simulazione.")
+                self.canvas_val.draw()
+        except Exception as exc:
+            self.lbl_memory.setText(f"Tipo C non compatibile con questa LUT: {exc}")
 
     def load_opt_csv(self):
         filepath, _ = QFileDialog.getOpenFileName(
@@ -929,15 +1001,14 @@ class LUTGeneratorApp(QMainWindow):
 
             validate_lut_inputs(self.opt_x, self.opt_y)
 
-            b_orig = len(orig_x) * 16
-            b_opt = len(self.opt_y) * 8 if self.is_pow2 else len(self.opt_x) * 16
-            reduction = 100 * (1 - b_opt / b_orig) if b_orig > 0 else 0
-
-            self.lbl_memory.setText(
-                f"ROM stimata: {b_orig} B → {b_opt} B | "
-                f"Punti: {len(orig_x)} → {len(self.opt_x)} | "
-                f"Risparmio: {reduction:.1f}%"
+            # Verifica subito che il tipo C selezionato possa rappresentare la LUT
+            # ottimizzata: overflow, unsigned con valori negativi e breakpoint
+            # collassati vengono mostrati come errori espliciti nella GUI.
+            bp_type, table_type = self.get_selected_c_types()
+            prepare_deployed_lut_data(
+                self.opt_x, self.opt_y, bp_type, table_type, self.is_pow2, self.pow2_N
             )
+            self.update_memory_label()
 
             self.plot_opt_data()
 
@@ -962,18 +1033,31 @@ class LUTGeneratorApp(QMainWindow):
             )
 
             if self.opt_x is not None and self.opt_y is not None:
-                lbl = f"EvenPow2Spacing dx={2.0 ** self.pow2_N:.6g}" if self.is_pow2 else "RDP / Greedy robusto"
+                bp_type, table_type = self.get_selected_c_types()
+                deployed_x, deployed_y = prepare_deployed_lut_data(
+                    self.opt_x, self.opt_y, bp_type, table_type, self.is_pow2, self.pow2_N
+                )
+                lbl_base = (
+                    f"EvenPow2Spacing dx={2.0 ** self.pow2_N:.6g}"
+                    if self.is_pow2
+                    else "RDP / Greedy robusto"
+                )
+                lbl = (
+                    f"{lbl_base} | {C_TYPE_SPECS[bp_type].c_type} / "
+                    f"{C_TYPE_SPECS[table_type].c_type}"
+                )
 
                 self.ax_opt_main.plot(
-                    self.opt_x,
-                    self.opt_y,
+                    deployed_x,
+                    deployed_y,
                     label=lbl,
                     color="blue",
                     marker="o",
                     markersize=4
                 )
 
-                y_interp = np.interp(orig_x, self.opt_x, self.opt_y)
+                # L'errore visualizzato include anche la quantizzazione del tipo C.
+                y_interp = np.interp(orig_x, deployed_x, deployed_y)
                 err = orig_y - y_interp
 
                 self.ax_opt_err.plot(orig_x, err, color="red")
@@ -1011,63 +1095,29 @@ class LUTGeneratorApp(QMainWindow):
                 y_data = self.opt_y
 
             validate_lut_inputs(x_data, y_data)
+            bp_type, table_type = self.get_selected_c_types()
+            extrap_str = (
+                "EXTRAP_LINEAR"
+                if self.combo_extrap_c.currentIndex() == 1
+                else "EXTRAP_CLIP"
+            )
 
-            y_str = ", ".join(f"{v:.17g}" for v in y_data)
-            extrap_str = "EXTRAP_LINEAR" if self.combo_extrap_c.currentIndex() == 1 else "EXTRAP_CLIP"
-
-            base_name = "".join(ch if ch.isalnum() else "_" for ch in f"lut_{cy}_vs_{cx}")
-            base_name = base_name.lower()
-
-            c_code = ""
-            c_code += "/* ==========================================\n"
-            c_code += " * Generato da: Simulink LUT Suite\n"
-            c_code += f" * Asse X: {cx}\n"
-            c_code += f" * Asse Y: {cy}\n"
-            c_code += " * ========================================== */\n\n"
-
-            c_code += "#include \"simulink_lookup.h\"\n\n"
-
-            c_code += "#ifndef LUT_SIZE\n"
-            c_code += "#define LUT_SIZE(x) (sizeof(x) / sizeof((x)[0]))\n"
-            c_code += "#endif\n\n"
-
-            if self.is_pow2:
-                dx = 2.0 ** self.pow2_N
-                c_code += f"static const double {base_name}_x_min = {x_data[0]:.17g};\n"
-                c_code += f"static const double {base_name}_x_spacing = {dx:.17g}; /* 2^{self.pow2_N} */\n"
-                c_code += f"static const double {base_name}_inv_spacing = {1.0 / dx:.17g};\n\n"
-                c_code += f"static const double {base_name}_table[] = {{\n    {y_str}\n}};\n\n"
-
-                c_code += f"double {base_name}_eval(double input)\n"
-                c_code += "{\n"
-                c_code += (
-                    f"    PrelookupResult kf = prelookup_pow2(input, "
-                    f"{base_name}_x_min, "
-                    f"{base_name}_x_spacing, "
-                    f"{base_name}_inv_spacing, "
-                    f"LUT_SIZE({base_name}_table), "
-                    f"{extrap_str});\n"
-                )
-                c_code += f"    return interpolate_1d(kf, {base_name}_table);\n"
-                c_code += "}\n"
-
-            else:
-                x_str = ", ".join(f"{v:.17g}" for v in x_data)
-
-                c_code += f"static const double {base_name}_breakpoints[] = {{\n    {x_str}\n}};\n\n"
-                c_code += f"static const double {base_name}_table[] = {{\n    {y_str}\n}};\n\n"
-
-                c_code += f"double {base_name}_eval(double input)\n"
-                c_code += "{\n"
-                c_code += (
-                    f"    PrelookupResult kf = prelookup(input, "
-                    f"{base_name}_breakpoints, "
-                    f"LUT_SIZE({base_name}_breakpoints), "
-                    f"{extrap_str});\n"
-                )
-                c_code += f"    return interpolate_1d(kf, {base_name}_table);\n"
-                c_code += "}\n"
-
+            # Questa chiamata quantizza e valida prima di emettere il C.
+            # In questo modo il codice non viene generato se il tipo scelto
+            # causa overflow, perdita di monotonicita' o spacing pow2 invalido.
+            base_name = f"lut_{cy}_vs_{cx}"
+            c_code = generate_c_lut(
+                base_name=base_name,
+                breakpoints=x_data,
+                table=y_data,
+                breakpoint_type=bp_type,
+                table_type=table_type,
+                is_pow2=self.is_pow2,
+                pow2_n=self.pow2_N,
+                extrapolation=extrap_str,
+                source_x_name=cx,
+                source_y_name=cy,
+            )
             self.text_code.setPlainText(c_code)
 
         except Exception as e:
@@ -1223,6 +1273,14 @@ class LUTGeneratorApp(QMainWindow):
 
             validate_lut_inputs(lut_x, lut_y)
 
+            # Simula esattamente i dati che finiranno nel C dopo la quantizzazione
+            # del tipo selezionato, non soltanto la LUT double in memoria Python.
+            bp_type, table_type = self.get_selected_c_types()
+            lut_x, lut_y = prepare_deployed_lut_data(
+                lut_x, lut_y, bp_type, table_type, self.is_pow2, self.pow2_N
+            )
+            validate_lut_inputs(lut_x, lut_y)
+
             num_points = len(lut_y)
             y_sim = np.zeros_like(u_val, dtype=float)
 
@@ -1233,7 +1291,7 @@ class LUTGeneratorApp(QMainWindow):
             )
 
             if self.is_pow2:
-                dx = 2.0 ** self.pow2_N
+                dx = float(lut_x[1] - lut_x[0])
                 inv_dx = 1.0 / dx
 
                 for i, u_in in enumerate(u_val):
